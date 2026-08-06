@@ -1,0 +1,7 @@
+numpy>=2.0
+opencv-python>=4.10
+torch>=2.5
+onnx>=1.16
+onnxruntime>=1.18
+gradio>=5.0
+pytest>=8.0
