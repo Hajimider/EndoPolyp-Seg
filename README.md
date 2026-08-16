@@ -321,10 +321,6 @@ python -m pytest -q
 - CPU 延迟受处理器、线程数和运行时版本影响，本文数字只代表本次基准运行。
 - 项目没有覆盖数据采集、临床标注复核、跨中心验证或医疗器械合规，不用于临床诊断。
 
-## 简历描述示例
-
-> 基于 Kvasir-SEG 完成内镜息肉二值分割项目：审计并固定划分 1,000 组图像与像素级掩膜，从零实现轻量 U-Net，并增加 ResNet18 编码器迁移学习实验及连通域、形态学后处理；U-Net 默认评估 Dice 为 0.6562，验证集选参后测试集 Dice 由 0.6674 提升至 0.6681；完成 ONNX 一致性校验和 CPU 推理测试，单图 p95 为 29.94 ms，并封装 Gradio 可视化页面。
-
 ## English Summary
 
 EndoPolyp-Seg is a reproducible endoscopic polyp segmentation project based on the public Kvasir-SEG dataset. It audits 1,000 image-mask pairs, creates a deterministic 70/15/15 split, trains a small U-Net from scratch, compares it with an OpenCV threshold-and-morphology baseline, evaluates the test split once, exports ONNX, benchmarks CPU inference, and provides a Gradio single-image demo. The U-Net achieved a test Dice of 0.6562 and IoU of 0.5366. ONNX Runtime p95 latency was 29.94 ms on the recorded 50-image benchmark. The model is intended for algorithm practice and portfolio demonstration, not clinical diagnosis.
