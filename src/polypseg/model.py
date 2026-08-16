@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torchvision.models as tv_models
 from torch import nn
 from torch.nn import functional as F
 
@@ -57,6 +58,66 @@ class UNetSmall(nn.Module):
         dec2 = self._decode(dec3, enc2, self.up2, self.dec2)
         dec1 = self._decode(dec2, enc1, self.up1, self.dec1)
         return self.head(dec1)
+
+
+class UNetResNet18(nn.Module):
+    """U-Net decoder with a compact ImageNet-pretrained ResNet18 encoder."""
+
+    def __init__(self, pretrained: bool = True) -> None:
+        super().__init__()
+        weights = tv_models.ResNet18_Weights.DEFAULT if pretrained else None
+        try:
+            backbone = tv_models.resnet18(weights=weights)
+        except (OSError, RuntimeError) as exc:
+            if not pretrained:
+                raise
+            raise RuntimeError(
+                "ResNet18 pretrained weights are unavailable. Use --no-pretrained for an offline run."
+            ) from exc
+        self.stem = nn.Sequential(backbone.conv1, backbone.bn1, backbone.relu)
+        self.pool = backbone.maxpool
+        self.layer1, self.layer2 = backbone.layer1, backbone.layer2
+        self.layer3, self.layer4 = backbone.layer3, backbone.layer4
+        self.up4 = nn.ConvTranspose2d(512, 256, 2, 2)
+        self.dec4 = ConvBlock(512, 256)
+        self.up3 = nn.ConvTranspose2d(256, 128, 2, 2)
+        self.dec3 = ConvBlock(256, 128)
+        self.up2 = nn.ConvTranspose2d(128, 64, 2, 2)
+        self.dec2 = ConvBlock(128, 64)
+        self.up1 = nn.ConvTranspose2d(64, 32, 2, 2)
+        self.dec1 = ConvBlock(96, 64)
+        self.head = nn.Conv2d(64, 1, 1)
+
+    def set_encoder_trainable(self, full: bool = False) -> None:
+        """Freeze early features; optionally unfreeze the complete encoder."""
+        encoder = (self.stem, self.layer1, self.layer2, self.layer3, self.layer4)
+        for module in encoder:
+            for parameter in module.parameters():
+                parameter.requires_grad = full
+        if not full:
+            for parameter in self.layer4.parameters():
+                parameter.requires_grad = True
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_size = x.shape[-2:]
+        stem = self.stem(x)
+        skip1 = self.layer1(self.pool(stem))
+        skip2 = self.layer2(skip1)
+        skip3 = self.layer3(skip2)
+        x = self.layer4(skip3)
+        x = self.dec4(torch.cat([self.up4(x), skip3], dim=1))
+        x = self.dec3(torch.cat([self.up3(x), skip2], dim=1))
+        x = self.dec2(torch.cat([self.up2(x), skip1], dim=1))
+        x = self.dec1(torch.cat([self.up1(x), stem], dim=1))
+        return self.head(torch.nn.functional.interpolate(x, size=input_size, mode="bilinear", align_corners=False))
+
+
+def build_model(name: str, *, pretrained: bool = True) -> nn.Module:
+    if name == "unet":
+        return UNetSmall(base_channels=16)
+    if name == "resnet18_unet":
+        return UNetResNet18(pretrained=pretrained)
+    raise ValueError(f"Unknown segmentation model: {name}")
 
 
 def dice_loss(logits: torch.Tensor, target: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:

@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from polypseg.data import SegmentationDataset, load_records
 from polypseg.inference import load_torch_model
 from polypseg.metrics import binary_metrics, mean_metrics
-from polypseg.model import UNetSmall, dice_loss
+from polypseg.model import build_model, dice_loss
 
 
 def seed_everything(seed: int) -> None:
@@ -61,6 +61,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true", help="Run one epoch on a small data subset.")
     parser.add_argument("--resume", type=Path, help="Continue from a saved checkpoint without repeating completed epochs.")
+    parser.add_argument("--model", choices=("unet", "resnet18_unet"), default="unet")
+    parser.add_argument("--no-pretrained", action="store_true", help="Do not load ImageNet weights for the ResNet18 experiment.")
+    parser.add_argument("--unfreeze-encoder", action="store_true", help="Fine-tune all ResNet18 encoder layers.")
+    parser.add_argument("--tag", default="", help="Optional artifact name prefix for a separate experiment.")
     args = parser.parse_args()
     for name in ("epochs", "batch_size", "image_size", "patience"):
         if getattr(args, name) < 1:
@@ -84,13 +88,16 @@ def main() -> None:
     train_loader = DataLoader(train_set, batch_size=min(args.batch_size, len(train_set)), shuffle=True, num_workers=0)
     val_loader = DataLoader(val_set, batch_size=min(args.batch_size, len(val_set)), shuffle=False, num_workers=0)
 
-    model = UNetSmall(base_channels=16).cpu()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    model = build_model(args.model, pretrained=args.model == "resnet18_unet" and not args.no_pretrained).cpu()
+    if args.model == "resnet18_unet":
+        model.set_encoder_trainable(full=args.unfreeze_encoder)
+    optimizer = torch.optim.Adam((parameter for parameter in model.parameters() if parameter.requires_grad), lr=args.learning_rate)
     loss_fn = nn.BCEWithLogitsLoss()
     best_dice, remaining_patience, start_epoch = -1.0, args.patience, 1
     resumed_from: int | None = None
     if args.resume:
         model, checkpoint = load_torch_model(args.resume)
+        args.model = str(checkpoint.get("model_name", "unet"))
         if int(checkpoint.get("image_size", args.image_size)) != args.image_size:
             parser.error("Resume checkpoint image size does not match the fixed 256px input")
         if "optimizer_state" in checkpoint:
@@ -102,9 +109,10 @@ def main() -> None:
     reports = ROOT / "reports"
     artifacts.mkdir(exist_ok=True)
     reports.mkdir(exist_ok=True)
-    checkpoint_path = artifacts / ("smoke.pt" if args.smoke else "best.pt")
-    last_checkpoint_path = artifacts / ("smoke_last.pt" if args.smoke else "last.pt")
-    history_path = reports / ("smoke_history.csv" if args.smoke else "training_history.csv")
+    prefix = f"{args.tag}_" if args.tag else ""
+    checkpoint_path = artifacts / (f"{prefix}smoke.pt" if args.smoke else f"{prefix}best.pt")
+    last_checkpoint_path = artifacts / (f"{prefix}smoke_last.pt" if args.smoke else f"{prefix}last.pt")
+    history_path = reports / (f"{prefix}smoke_history.csv" if args.smoke else f"{prefix}training_history.csv")
     history = load_history(history_path, start_epoch) if args.resume else []
 
     for epoch in range(start_epoch, args.epochs + 1):
@@ -130,6 +138,8 @@ def main() -> None:
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "base_channels": 16,
+            "model_name": args.model,
+            "pretrained_encoder": args.model == "resnet18_unet" and not args.no_pretrained,
             "image_size": args.image_size,
             "epoch": epoch,
             "validation_metrics": val_metrics,
@@ -158,7 +168,7 @@ def main() -> None:
         "epochs_logged": len(history),
         "resumed_from_epoch": resumed_from,
     }
-    (reports / ("smoke_summary.json" if args.smoke else "training_summary.json")).write_text(
+    (reports / (f"{prefix}smoke_summary.json" if args.smoke else f"{prefix}training_summary.json")).write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
     print(json.dumps(summary, indent=2))

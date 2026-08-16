@@ -1,0 +1,59 @@
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.test-tmp*/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+
+# Local Python environments and secrets
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# IDE-local state; keep portable shared launch files
+.idea/
+.idea-backup-*/
+.vscode/*
+!.vscode/launch.json
+.run/*
+!.run/*.run.xml
+
+# Datasets and generated manifests
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Model files and generated reports
+artifacts/*
+!artifacts/.gitkeep
+reports/*
+!reports/.gitkeep
+*.pt
+*.pth
+*.onnx
+
+# Runtime and local work files
+*.log
+.gradio/
+findings.md
+progress.md
+task_plan.md
+测试.txt
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini

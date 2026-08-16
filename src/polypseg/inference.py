@@ -11,10 +11,11 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-from .model import UNetSmall
+from .model import build_model
+from .postprocess import clean_mask
 
 
-def load_torch_model(checkpoint_path: str | Path) -> tuple[UNetSmall, dict[str, Any]]:
+def load_torch_model(checkpoint_path: str | Path) -> tuple[torch.nn.Module, dict[str, Any]]:
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Model checkpoint not found: {checkpoint_path}")
@@ -24,7 +25,7 @@ def load_torch_model(checkpoint_path: str | Path) -> tuple[UNetSmall, dict[str, 
         payload = torch.load(checkpoint_path, map_location="cpu")
     if "model_state" not in payload:
         raise ValueError(f"Unexpected checkpoint format: {checkpoint_path}")
-    model = UNetSmall(base_channels=int(payload.get("base_channels", 16)))
+    model = build_model(str(payload.get("model_name", "unet")), pretrained=False)
     model.load_state_dict(payload["model_state"])
     model.eval()
     return model, payload
@@ -71,10 +72,11 @@ class OnnxPredictor:
         input_shape = self.session.get_inputs()[0].shape
         self.image_size = int(input_shape[-1]) if isinstance(input_shape[-1], int) else 256
 
-    def predict(self, image_bgr: np.ndarray, threshold: float = 0.5) -> tuple[np.ndarray, float]:
+    def predict(self, image_bgr: np.ndarray, threshold: float = 0.5, min_area: int = 0, kernel_size: int = 0) -> tuple[np.ndarray, float]:
         tensor, original_shape = preprocess_bgr(image_bgr, self.image_size)
         start = time.perf_counter()
         logits = self.session.run(None, {self.input_name: tensor})[0]
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         probability = 1.0 / (1.0 + np.exp(-logits[0, 0]))
-        return mask_from_probability(probability, original_shape, threshold), elapsed_ms
+        mask = mask_from_probability(probability, original_shape, threshold)
+        return clean_mask(mask, min_area=min_area, kernel_size=kernel_size), elapsed_ms

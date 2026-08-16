@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 import cv2
@@ -15,6 +16,17 @@ sys.path.insert(0, str(ROOT / "src"))
 from polypseg.inference import OnnxPredictor, overlay_mask
 
 
+def load_postprocess_config() -> dict[str, int | float]:
+    path = ROOT / "reports" / "postprocess_tuning.json"
+    if not path.is_file():
+        return {"threshold": 0.5, "min_area": 0, "kernel_size": 0}
+    try:
+        best = json.loads(path.read_text(encoding="utf-8"))["best"]
+        return {key: best[key] for key in ("threshold", "min_area", "kernel_size")}
+    except (OSError, KeyError, json.JSONDecodeError):
+        return {"threshold": 0.5, "min_area": 0, "kernel_size": 0}
+
+
 def build_demo() -> gr.Interface:
     predictor = OnnxPredictor(ROOT / "artifacts" / "best.onnx")
 
@@ -22,7 +34,8 @@ def build_demo() -> gr.Interface:
         if image_rgb is None:
             raise gr.Error("Please upload an endoscopy image.")
         image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-        mask, elapsed_ms = predictor.predict(image_bgr)
+        options = load_postprocess_config()
+        mask, elapsed_ms = predictor.predict(image_bgr, **options)
         overlay_rgb = cv2.cvtColor(overlay_mask(image_bgr, mask), cv2.COLOR_BGR2RGB)
         details = {"predicted_area_percent": round(float(mask.mean() * 100.0), 2), "onnx_cpu_latency_ms": round(elapsed_ms, 2)}
         return mask * 255, overlay_rgb, details

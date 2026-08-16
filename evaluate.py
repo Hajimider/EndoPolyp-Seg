@@ -18,6 +18,7 @@ from polypseg.data import load_records
 from polypseg.image_io import binary_mask, read_image, write_image
 from polypseg.inference import load_torch_model, mask_from_probability, overlay_mask, preprocess_bgr
 from polypseg.metrics import binary_metrics, mean_metrics
+from polypseg.postprocess import clean_mask
 
 
 def main() -> None:
@@ -26,6 +27,8 @@ def main() -> None:
     parser.add_argument("--split", choices=("val", "test"), default="test")
     parser.add_argument("--save-samples", type=int, default=6)
     parser.add_argument("--overwrite", action="store_true", help="Explicitly replace an existing report for the selected split.")
+    parser.add_argument("--min-area", type=int, default=0)
+    parser.add_argument("--kernel-size", type=int, default=0)
     args = parser.parse_args()
     report_path = ROOT / "reports" / ("evaluation.json" if args.split == "test" else "validation_evaluation.json")
     if report_path.exists() and not args.overwrite:
@@ -43,6 +46,7 @@ def main() -> None:
             logits = model(torch.from_numpy(tensor)).numpy()[0, 0]
             probability = 1.0 / (1.0 + np.exp(-logits))
             prediction = mask_from_probability(probability, original_shape)
+            prediction = clean_mask(prediction, args.min_area, args.kernel_size)
             target = binary_mask(read_image(record.mask, cv2.IMREAD_GRAYSCALE))
             rows.append(binary_metrics(target, prediction))
             if index < args.save_samples:
@@ -57,6 +61,8 @@ def main() -> None:
         "split": args.split,
         "images": len(rows),
         "threshold": 0.5,
+        "min_area": args.min_area,
+        "kernel_size": args.kernel_size,
         **mean_metrics(rows),
     }
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")

@@ -2,7 +2,7 @@
 
 ## 项目说明
 
-EndoPolyp-Seg 基于公开 Kvasir-SEG 内镜图像，完成息肉区域的像素级二值分割。项目使用轻量 U-Net 作为主模型，并用 OpenCV 阈值分割作为传统方法对照。完整流程包括图像与掩膜审计、固定数据划分、smoke 训练、验证集选模、测试集评估、ONNX 导出、CPU 推理测速和 Gradio 单图演示。
+EndoPolyp-Seg 基于公开 Kvasir-SEG 内镜图像，完成息肉区域的像素级二值分割。项目使用轻量 U-Net 作为主模型，并增加 ResNet18 编码器迁移学习实验和 U-Net 输出后处理对照；OpenCV 阈值分割作为传统方法基线。完整流程包括图像与掩膜审计、固定数据划分、smoke 训练、验证集选模、测试集评估、ONNX 导出、CPU 推理测速和 Gradio 单图演示。
 
 主模型在 150 张独立测试图像上取得 `Dice = 0.6562`、`IoU = 0.5366`、`Precision = 0.7951`、`Recall = 0.6562`。导出的 ONNX 模型大小为 `1.94 MB`，50 张测试图像上的 CPU 推理 p50 为 `23.05 ms`，p95 为 `29.94 ms`。这些数值来自项目当前保存的一次完整实验。
 
@@ -17,6 +17,8 @@ EndoPolyp-Seg 基于公开 Kvasir-SEG 内镜图像，完成息肉区域的像素
 | 图像与掩膜可能缺失、损坏或尺寸不一致 | 双向核验文件名，检查可读性、尺寸和空掩膜 | `data/processed/report.json` |
 | 需要得到像素级息肉区域 | 从零实现初始通道为 16 的轻量 U-Net | `artifacts/best.pt`、预测掩膜 |
 | 需要说明深度模型是否真的有价值 | 使用 HSV/Otsu、形态学和最大连通域建立 OpenCV 对照 | `reports/classical_baseline.json` |
+| 需要复用预训练视觉特征 | 增加 ResNet18 编码器 U-Net，冻结早期层并微调最后编码阶段 | `train.py --model resnet18_unet` |
+| 模型输出存在小噪声和孔洞 | 在验证集选择阈值、最小连通域和闭运算核 | `reports/postprocess_tuning.json` |
 | 训练和测试不能混用 | 验证集选择最佳权重，测试集只做最终报告 | 训练摘要与测试指标 |
 | 运行设备没有 GPU | 使用 256×256 输入，在 CPU 上训练并导出 ONNX | 模型大小、p50/p95 延迟 |
 
@@ -53,8 +55,10 @@ Kvasir-SEG 原始图像与掩膜
   -> 写入 manifest.csv 和数据审计报告
   -> 1 epoch smoke 链路检查
   -> 轻量 U-Net 正式训练，验证集选择 best.pt
+  -> ResNet18 编码器迁移学习 smoke / 独立实验
   -> 测试集只评估一次
   -> OpenCV 传统方法在同一测试集对照
+  -> 验证集选择后处理参数，测试集比较前后指标
   -> 导出 ONNX 并检查数值一致性
   -> CPU 延迟测试与 Gradio 单图演示
 ```
@@ -84,9 +88,21 @@ Kvasir-SEG 原始图像与掩膜
 
 传统方法读取 HSV 饱和度通道，使用 Otsu 自动阈值生成前景，再执行 7×7 椭圆核的开闭运算，最后保留最大连通域。它不参与 U-Net 训练，只用于观察固定阈值和颜色特征在复杂内镜图像上的局限。
 
+### ResNet18 编码器迁移学习
+
+在不改变二值分割任务的前提下，项目提供 `ResNet18 + U-Net 解码器` 作为改进实验。编码器使用 ImageNet 预训练权重，默认冻结 stem、layer1、layer2、layer3，只训练解码器和 layer4；也可以用 `--unfreeze-encoder` 解冻整个编码器。该实验使用独立的 `--tag` 产物前缀，不覆盖从零训练的 `best.pt`。
+
+CPU 环境下先运行 smoke 验证结构和权重加载，再决定是否进行更长的独立训练。当前保存的 ResNet18 smoke 结果只用于链路检查，不与主模型测试指标混合。
+
+### U-Net 输出后处理
+
+后处理作用于模型输出的二值掩膜，不改变模型参数。`tune_postprocess.py` 在验证集搜索概率阈值、最小连通域面积和椭圆闭运算核；`postprocess_eval.py` 使用验证集选出的参数，在测试集并列报告原始掩膜和后处理掩膜。
+
+当前验证集选择的参数为阈值 `0.35`、最小连通域 `128`、闭运算核 `5`。测试集原始 Dice 为 `0.6674`，后处理后为 `0.6681`；原始 IoU 为 `0.5467`，后处理后为 `0.5476`。参数只由验证集确定，测试集不参与搜索。
+
 ## 运行结果
 
-以下结果来自验证集选定的 `best.pt`，测试集只在模型确定后评估一次：
+以下主结果使用验证集选定的 `best.pt`，并按默认阈值 `0.5` 在测试集评估。后处理实验使用验证集单独选择的参数，结果在后文独立列出，避免混淆两种评估配置：
 
 | 方法 | Dice | IoU | Precision | Recall |
 | --- | ---: | ---: | ---: | ---: |
@@ -94,6 +110,8 @@ Kvasir-SEG 原始图像与掩膜
 | OpenCV 传统对照 | 0.2921 | 0.1892 | 0.1948 | **0.9192** |
 
 OpenCV 对照的 Recall 很高，但 Precision 只有 `0.1948`，说明它把大量正常组织也分成了息肉。U-Net 的 Precision 和重叠指标明显更高，输出区域更集中；Recall 仍有提升空间，说明小息肉、低对比度区域和不规则边界仍可能漏分。
+
+使用验证集选择阈值 `0.35`、最小连通域面积 `128` 和闭运算核大小 `5` 后，测试集 Dice 从同配置下的 `0.6674` 提升至 `0.6681`，IoU 从 `0.5467` 提升至 `0.5476`。提升幅度较小，说明后处理主要用于清理局部噪声，不能替代模型本身的分割能力。
 
 ### ONNX 与 CPU 推理
 
@@ -162,6 +180,12 @@ python train.py --smoke
 
 # 正式训练
 python train.py
+
+# ResNet18 编码器迁移学习 smoke，不覆盖原 U-Net 产物
+python train.py --model resnet18_unet --tag resnet18_smoke --smoke
+
+# 独立进行迁移学习训练，可按 CPU 时间调整轮数
+python train.py --model resnet18_unet --tag resnet18_tune --epochs 5
 ```
 
 smoke 结果不能作为正式模型性能。训练意外中断时，可以从最近保存的检查点继续：
@@ -184,6 +208,12 @@ python evaluate.py
 
 ```powershell
 python evaluate.py --overwrite
+
+# 在验证集搜索后处理参数
+python tune_postprocess.py
+
+# 在测试集比较后处理前后指标
+python postprocess_eval.py
 ```
 
 ### 7. 导出 ONNX 并测速
@@ -212,8 +242,11 @@ PyCharm 或 VS Code 打开 `EndoPolyp-Seg` 目录后，由使用者选择已经�
 | `run_project.py` | 检查并补齐流程，最后启动 Demo |
 | `prepare_data.py` | 数据配对审计和固定划分 |
 | `train.py` | smoke 或正式训练 U-Net |
+| `train.py --model resnet18_unet` | ResNet18 编码器迁移学习实验 |
 | `classical_baseline.py` | OpenCV 传统分割对照 |
 | `evaluate.py` | 验证或测试指标与预测样例 |
+| `tune_postprocess.py` | 验证集选择后处理参数 |
+| `postprocess_eval.py` | 测试集比较后处理前后指标 |
 | `export_onnx.py` | ONNX 导出和数值一致性检查 |
 | `benchmark.py` | ONNX Runtime CPU 延迟测试 |
 | `app.py` | Gradio 单图演示 |
@@ -228,6 +261,8 @@ EndoPolyp-Seg/
 ├── app.py                         # Gradio 单图分割演示
 ├── prepare_data.py                # 图像/掩膜审计和固定划分
 ├── train.py                       # U-Net smoke / 正式训练
+├── tune_postprocess.py            # 验证集后处理参数搜索
+├── postprocess_eval.py            # 后处理前后测试集对比
 ├── classical_baseline.py          # OpenCV 传统分割对照
 ├── evaluate.py                    # Dice/IoU 等指标和预测样例
 ├── export_onnx.py                 # ONNX 导出和一致性检查
@@ -264,6 +299,8 @@ reports/evaluation.json                     # U-Net 测试集指标
 reports/prediction_samples/                 # 原图、真值、预测和叠加图
 reports/onnx_validation.json                # PyTorch/ONNX 数值差异
 reports/onnx_benchmark.json                 # ONNX Runtime CPU 延迟
+reports/postprocess_tuning.json             # 验证集后处理参数
+reports/postprocess_evaluation.json         # 后处理前后测试集指标
 ```
 
 ## 测试
@@ -272,43 +309,17 @@ reports/onnx_benchmark.json                 # ONNX Runtime CPU 延迟
 python -m pytest -q
 ```
 
-当前 10 个测试覆盖数据配对与固定划分、无效样本审计、图像张量归一化、掩膜二值化、Dice/IoU/Precision/Recall、U-Net 输出尺寸、Dice Loss 和 ONNX/PyTorch 输出一致性。
+当前 13 个测试覆盖数据配对与固定划分、无效样本审计、图像张量归一化、掩膜二值化、Dice/IoU/Precision/Recall、U-Net 输出尺寸、ResNet18 U-Net 输出尺寸、Dice Loss、后处理连通域与闭运算和 ONNX/PyTorch 输出一致性。
 
 ## 局限
 
 - Kvasir-SEG 只有 1,000 组图像和掩膜，数据来源、成像设备和息肉类型有限，测试结果不能直接外推到其他医院或设备。
 - 当前按图像随机划分。数据集没有在本项目中提供可用的患者或视频分组信息，因此不能证明不同分区来自完全独立的患者。
-- 模型从零训练且规模较小，没有使用预训练编码器、复杂增强或多模型融合，边界细节和小目标召回仍有限。
+- 主模型从零训练且规模较小；ResNet18 迁移学习只作为独立改进实验，没有与主模型结果混写，也没有使用多模型融合。
 - OpenCV 方法依赖颜色和最大连通域，只适合作为可解释对照，不是稳定的息肉分割方案。
-- 固定阈值为 0.5，没有单独进行阈值搜索；不同应用场景可能需要在验证集重新校准。
+- 默认模型评估使用阈值 0.5；后处理实验在验证集选择阈值 0.35、最小连通域面积和闭运算参数，再在测试集独立比较。参数仍可能随数据来源和应用场景变化，需要重新校准。
 - CPU 延迟受处理器、线程数和运行时版本影响，本文数字只代表本次基准运行。
 - 项目没有覆盖数据采集、临床标注复核、跨中心验证或医疗器械合规，不用于临床诊断。
-
-## 简历描述示例
-
-> 基于 Kvasir-SEG 完成内镜息肉二值分割项目：审计并固定划分 1,000 组图像与像素级掩膜，从零实现轻量 U-Net，并以 OpenCV 阈值和形态学方法建立传统对照；U-Net 在 150 张独立测试图像上取得 Dice 0.6562、IoU 0.5366，导出 ONNX 后最大输出误差为 5.72e-06，CPU 单图推理 p95 为 29.94 ms，并完成 Gradio 单图可视化。
-
-## 面试问答
-
-### 为什么选择 U-Net？
-
-U-Net 的编码器提取上下文信息，解码器恢复空间分辨率，跳跃连接可以保留浅层边缘信息。它适合数据量不大的像素级分割任务，结构也容易从零实现和解释。
-
-### Dice 和 IoU 有什么区别？
-
-两者都衡量预测掩膜与真实掩膜的重叠。Dice 对重叠区域的权重更高，常用于医学图像分割；IoU 是交集除以并集，数值通常低于 Dice。项目同时报告两项，避免只看一个指标。
-
-### 为什么 OpenCV 对照的 Recall 很高，Dice 却很低？
-
-传统方法分出了大面积前景，覆盖了不少真实息肉，因此 Recall 较高；同时它把大量正常组织误判为息肉，导致 Precision、Dice 和 IoU 很低。这说明只追求 Recall 会掩盖严重的过分割。
-
-### 为什么测试集只评估一次？
-
-训练轮数、早停和最佳权重都由训练集与验证集决定。如果反复根据测试指标调参，测试集就失去了独立评估意义。项目固定最佳权重后才生成最终测试报告。
-
-### 为什么还要检查 ONNX 与 PyTorch 的输出差异？
-
-模型导出可能引入算子转换或数值精度差异。只确认 ONNX 文件能运行还不够，需要在同一输入上比较输出，确认部署模型没有明显偏离训练模型。
 
 ## English Summary
 
